@@ -31,3 +31,13 @@ jobs:
         run: git config core.fileMode false
       - run: make doctor
       - run: make test
+
+  mvp-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: make mvp-test
+      - run: make mvp-install-check
