@@ -1643,6 +1643,15 @@ class SessionStore:
                             available_context_tokens,
                         ),
                     }
+                stored_context_manifest = analysis.get("context_pack_manifest")
+                if isinstance(stored_context_manifest, Mapping):
+                    stored_algorithm = stored_context_manifest.get("algorithm")
+                    if isinstance(stored_algorithm, Mapping):
+                        stored_version = stored_algorithm.get("version")
+                        if isinstance(stored_version, int) and not isinstance(
+                            stored_version, bool
+                        ):
+                            route_options["algorithm_version"] = stored_version
                 rebuilt = build_context_route(
                     full_context=full_context,
                     manuscript_text=source_text,

@@ -20,15 +20,30 @@ from typing import Any
 
 
 ALGORITHM_NAME = "generic_claim_anchor_pack"
-ALGORITHM_VERSION = 1
+ALGORITHM_VERSION = 2
+SUPPORTED_ALGORITHM_VERSIONS = frozenset({1, 2})
 ROUTE = "bounded_preflight"
-ELIGIBLE_WORKFLOWS = {"audit", "self-review"}
+WORKFLOW_SCOPES = {
+    "argument-governance": "claim_evidence_alignment_only",
+    "audit": "evidence_rich_accuracy_check",
+    "self-review": "evidence_verification_only",
+}
+ELIGIBLE_WORKFLOWS_BY_VERSION = {
+    1: frozenset({"audit", "self-review"}),
+    2: frozenset(WORKFLOW_SCOPES),
+}
+ELIGIBLE_WORKFLOWS = ELIGIBLE_WORKFLOWS_BY_VERSION[ALGORITHM_VERSION]
 FULL_CONTEXT_THRESHOLD = 20_000
 MODEL_CONTEXT_TOKEN_LIMIT = 16_500
 MAX_EXCERPT_CHARS = 2_800
 MAX_ANCHORS = 80
 MAX_CLAIM_ANCHORS = 20
 MAX_STRUCTURE_ITEMS = 8
+MAX_PARALLEL_JSON_BRANCHES = 4
+MAX_PARALLEL_JSON_SCALAR_FIELDS = 6
+MAX_PARALLEL_JSON_SEQUENCE_FIELDS = 2
+MAX_PARALLEL_JSON_MAP_FIELDS = 1
+MAX_PARALLEL_JSON_MAP_ITEMS = 12
 MAX_DIRECT_COMPARISONS = 20
 MAX_SELECTION_CANDIDATES = 140
 NOTICE_ZH = "已使用相关片段和本地核验摘要，原文件未修改"
@@ -38,9 +53,7 @@ _RANGE_RE = re.compile(
     r"[\[(]\s*([-+]?\d+(?:\.\d+)?)\s*[,，–—-]\s*"
     r"([-+]?\d+(?:\.\d+)?)\s*[\])]"
 )
-_NUMERIC_PAIR_RE = re.compile(
-    r"[-+]?\d+(?:\.\d+)?\s*(?:/|:)\s*[-+]?\d+(?:\.\d+)?"
-)
+_NUMERIC_PAIR_RE = re.compile(r"[-+]?\d+(?:\.\d+)?\s*(?:/|:)\s*[-+]?\d+(?:\.\d+)?")
 _CITATION_RE = re.compile(
     r"\\cite\w*\{[^}]+\}|\[@?[A-Za-z][^]\n]{1,100}\]|"
     r"\([A-Z][A-Za-z-]+(?:\s+et\s+al\.)?,?\s+\d{4}[a-z]?\)"
@@ -335,13 +348,117 @@ def _flatten_json(
         scalar = value
         if isinstance(scalar, str):
             scalar = scalar[:80]
-        output.append(
-            {"path": path, "type": type(value).__name__, "value": scalar}
-        )
+        output.append({"path": path, "type": type(value).__name__, "value": scalar})
     return output
 
 
-def _json_structure(text: str) -> tuple[dict[str, Any], list[str]]:
+def _json_scalar(value: object) -> object:
+    if isinstance(value, str):
+        return value[:80]
+    return value
+
+
+def _parallel_json_object_summary(value: object) -> dict[str, Any] | None:
+    """Expose bounded sibling-object values without inferring their meaning."""
+
+    if not isinstance(value, Mapping):
+        return None
+    branches = [
+        (str(key), child)
+        for key, child in sorted(value.items(), key=lambda item: str(item[0]))
+        if isinstance(child, Mapping)
+    ][:MAX_PARALLEL_JSON_BRANCHES]
+    if len(branches) < 2:
+        return None
+
+    shared_fields = set.intersection(
+        *(set(str(key) for key in child) for _branch, child in branches)
+    )
+    scalar_fields = [
+        field
+        for field in sorted(shared_fields)
+        if all(
+            not isinstance(child.get(field), (Mapping, list))
+            for _branch, child in branches
+        )
+    ][:MAX_PARALLEL_JSON_SCALAR_FIELDS]
+    sequence_fields = [
+        field
+        for field in sorted(shared_fields)
+        if all(
+            isinstance(child.get(field), list)
+            and len(child[field]) <= 8
+            and all(not isinstance(item, (Mapping, list)) for item in child[field])
+            for _branch, child in branches
+        )
+    ][:MAX_PARALLEL_JSON_SEQUENCE_FIELDS]
+
+    scalar_map_fields: list[dict[str, Any]] = []
+    for field in sorted(shared_fields):
+        if not all(
+            isinstance(child.get(field), Mapping) for _branch, child in branches
+        ):
+            continue
+        shared_map_keys = set.intersection(
+            *(set(str(key) for key in child[field]) for _branch, child in branches)
+        )
+        scalar_map_keys = [
+            key
+            for key in sorted(shared_map_keys)
+            if all(
+                not isinstance(child[field].get(key), (Mapping, list))
+                for _branch, child in branches
+            )
+        ][:MAX_PARALLEL_JSON_MAP_ITEMS]
+        if not scalar_map_keys:
+            continue
+        scalar_map_fields.append(
+            {
+                "field": field,
+                "keys": scalar_map_keys,
+                "values": {
+                    branch: {
+                        key: _json_scalar(child[field][key]) for key in scalar_map_keys
+                    }
+                    for branch, child in branches
+                },
+            }
+        )
+        if len(scalar_map_fields) >= MAX_PARALLEL_JSON_MAP_FIELDS:
+            break
+
+    if not scalar_fields and not sequence_fields and not scalar_map_fields:
+        return None
+    return {
+        "parent_path": "$",
+        "branches": [branch for branch, _child in branches],
+        "shared_scalar_values": [
+            {
+                "field": field,
+                "values": {
+                    branch: _json_scalar(child[field]) for branch, child in branches
+                },
+            }
+            for field in scalar_fields
+        ],
+        "shared_sequence_values": [
+            {
+                "field": field,
+                "values": {
+                    branch: [_json_scalar(item) for item in child[field]]
+                    for branch, child in branches
+                },
+            }
+            for field in sequence_fields
+        ],
+        "shared_scalar_maps": scalar_map_fields,
+        "scientific_interpretation": "not_inferred",
+    }
+
+
+def _json_structure(
+    text: str, *, algorithm_version: int
+) -> tuple[dict[str, Any], list[str]]:
     try:
         value = json.loads(text)
     except json.JSONDecodeError as error:
@@ -353,11 +470,16 @@ def _json_structure(text: str) -> tuple[dict[str, Any], list[str]]:
     limitations = []
     if len(scalars) >= MAX_STRUCTURE_ITEMS:
         limitations.append("JSON structural paths were capped deterministically.")
-    return {
+    structure = {
         "parse_status": "parsed",
         "root_type": type(value).__name__,
         "paths": scalars,
-    }, limitations
+    }
+    if algorithm_version >= 2:
+        parallel_summary = _parallel_json_object_summary(value)
+        if parallel_summary is not None:
+            structure["parallel_object_summary"] = parallel_summary
+    return structure, limitations
 
 
 def _python_structure(text: str) -> tuple[dict[str, Any], list[str]]:
@@ -391,14 +513,18 @@ def _python_structure(text: str) -> tuple[dict[str, Any], list[str]]:
     )
 
 
-def _inspect_document(document: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def _inspect_document(
+    document: Mapping[str, Any], *, algorithm_version: int
+) -> tuple[dict[str, Any], list[str]]:
     text = str(document["text"])
     suffix = Path(str(document["filename"])).suffix.lower()
     if suffix == ".csv":
         structure, limitations = _csv_structure(text)
         file_type = "csv"
     elif suffix == ".json":
-        structure, limitations = _json_structure(text)
+        structure, limitations = _json_structure(
+            text, algorithm_version=algorithm_version
+        )
         file_type = "json"
     elif suffix == ".py":
         structure, limitations = _python_structure(text)
@@ -542,7 +668,9 @@ def _find_line_candidates(
     return candidates[: (60 if manuscript else 12)]
 
 
-def _range_candidates(manuscript_text: str, documents: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _range_candidates(
+    manuscript_text: str, documents: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
     manuscript_ranges = [
         [float(match.group(1)), float(match.group(2))]
         for match in _RANGE_RE.finditer(manuscript_text)
@@ -612,15 +740,11 @@ def _range_candidates(manuscript_text: str, documents: Sequence[Mapping[str, Any
         key=lambda item: (
             -sum(
                 left == right
-                for left, right in zip(
-                    item["manuscript_range"], item["evidence_range"]
-                )
+                for left, right in zip(item["manuscript_range"], item["evidence_range"])
             ),
             sum(
                 abs(left - right)
-                for left, right in zip(
-                    item["manuscript_range"], item["evidence_range"]
-                )
+                for left, right in zip(item["manuscript_range"], item["evidence_range"])
             ),
             str(item["evidence_source_id"]),
             str(item["evidence_paths"]),
@@ -706,15 +830,18 @@ def _preflight(
     manuscript_anchors: Sequence[Mapping[str, Any]],
     comparisons: Sequence[Mapping[str, Any]],
     excerpts: Sequence[Mapping[str, Any]],
+    *,
+    algorithm_version: int,
 ) -> dict[str, Any]:
     inventory = []
     limitations: list[str] = []
     for document in documents:
-        inspected, item_limitations = _inspect_document(document)
+        inspected, item_limitations = _inspect_document(
+            document, algorithm_version=algorithm_version
+        )
         inventory.append(inspected)
         limitations.extend(
-            f"{document['source_id']}: {limitation}"
-            for limitation in item_limitations
+            f"{document['source_id']}: {limitation}" for limitation in item_limitations
         )
     omitted = _omitted_summary(documents, excerpts)
     if any(item["omitted_chars"] for item in omitted):
@@ -729,7 +856,7 @@ def _preflight(
         "kind": "generic_deterministic_preflight",
         "algorithm": {
             "name": ALGORITHM_NAME,
-            "version": ALGORITHM_VERSION,
+            "version": algorithm_version,
         },
         "inventory": inventory,
         "manuscript_claim_anchors": list(manuscript_anchors),
@@ -752,11 +879,13 @@ def _pack_payload(
     workflow_scope: str,
     documents: Sequence[Mapping[str, Any]],
     excerpts: Sequence[Mapping[str, Any]],
+    *,
+    algorithm_version: int,
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "kind": "generic_hash_bound_context_pack",
-        "algorithm": {"name": ALGORITHM_NAME, "version": ALGORITHM_VERSION},
+        "algorithm": {"name": ALGORITHM_NAME, "version": algorithm_version},
         "author_goal": author_goal,
         "workflow_scope": workflow_scope,
         "source_inventory": [
@@ -782,6 +911,13 @@ def _model_context(pack: Mapping[str, Any], preflight: Mapping[str, Any]) -> str
         boundary += (
             " For self-review, use this bounded route only for evidence verification; "
             "do not assess whole-manuscript structure or contribution from excerpts."
+        )
+    elif pack.get("workflow_scope") == "claim_evidence_alignment_only":
+        boundary += (
+            " For argument-governance, assess only claim-evidence-inference-boundary "
+            "relationships visible in the included excerpts and inventory; do not "
+            "claim complete argument hierarchy, cross-section coverage, contribution "
+            "completeness, or global evidence balance from omitted material."
         )
     return "\n".join(
         [
@@ -810,12 +946,16 @@ def build_context_route(
     evidence_documents: Sequence[Mapping[str, object]],
     full_context_threshold: int = FULL_CONTEXT_THRESHOLD,
     model_context_token_limit: int = MODEL_CONTEXT_TOKEN_LIMIT,
+    algorithm_version: int | None = None,
 ) -> dict[str, Any]:
     """Return the unchanged full route or a deterministic bounded-preflight route."""
 
+    version = ALGORITHM_VERSION if algorithm_version is None else algorithm_version
+    if version not in SUPPORTED_ALGORITHM_VERSIONS:
+        raise ContextPackError(f"unsupported-algorithm-version:{version}")
     original_estimate = estimate_tokens(full_context)
     if (
-        workflow_id not in ELIGIBLE_WORKFLOWS
+        workflow_id not in ELIGIBLE_WORKFLOWS_BY_VERSION[version]
         or not evidence_documents
         or int(original_estimate["tokens"]) <= full_context_threshold
     ):
@@ -864,11 +1004,7 @@ def build_context_route(
         for value in _NUMBER_RE.findall(str(item["text"]))
     }
     comparisons = _direct_comparisons(manuscript_text, documents)
-    workflow_scope = (
-        "evidence_verification_only"
-        if workflow_id == "self-review"
-        else "evidence_rich_accuracy_check"
-    )
+    workflow_scope = WORKFLOW_SCOPES[workflow_id]
 
     candidates: list[dict[str, Any]] = []
     manuscript_chunks = _chunk_ranges(manuscript_text)
@@ -900,9 +1036,7 @@ def build_context_route(
                 {
                     **candidate,
                     "required": False,
-                    "priority": (
-                        1 if rank == 0 else min(3, rank + 1)
-                    ),
+                    "priority": (1 if rank == 0 else min(3, rank + 1)),
                 }
             )
     for start, end in manuscript_chunks[1:]:
@@ -955,18 +1089,22 @@ def build_context_route(
             *selected,
             _excerpt(by_id[source_id], candidate),
         ]
-        proposed.sort(key=lambda item: (str(item["source_id"]), int(item["char_start"])))
+        proposed.sort(
+            key=lambda item: (str(item["source_id"]), int(item["char_start"]))
+        )
         proposed_preflight = _preflight(
             documents,
             manuscript_anchors,
             comparisons,
             proposed,
+            algorithm_version=version,
         )
         proposed_pack = _pack_payload(
             author_goal,
             workflow_scope,
             documents,
             proposed,
+            algorithm_version=version,
         )
         proposed_context = _model_context(proposed_pack, proposed_preflight)
         if int(estimate_tokens(proposed_context)["tokens"]) > model_context_token_limit:
@@ -978,8 +1116,20 @@ def build_context_route(
 
     if not any(item["source_id"] == "manuscript" for item in selected):
         raise ContextPackError("bounded-pack-missing-manuscript")
-    preflight = _preflight(documents, manuscript_anchors, comparisons, selected)
-    pack = _pack_payload(author_goal, workflow_scope, documents, selected)
+    preflight = _preflight(
+        documents,
+        manuscript_anchors,
+        comparisons,
+        selected,
+        algorithm_version=version,
+    )
+    pack = _pack_payload(
+        author_goal,
+        workflow_scope,
+        documents,
+        selected,
+        algorithm_version=version,
+    )
     model_context = _model_context(pack, preflight)
     model_estimate = estimate_tokens(model_context)
     if int(model_estimate["tokens"]) > model_context_token_limit:
@@ -993,7 +1143,7 @@ def build_context_route(
         "route": ROUTE,
         "algorithm": {
             "name": ALGORITHM_NAME,
-            "version": ALGORITHM_VERSION,
+            "version": version,
             "selection_inputs": [
                 "workflow",
                 "author_goal",

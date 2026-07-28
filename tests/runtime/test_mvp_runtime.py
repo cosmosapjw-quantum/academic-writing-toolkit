@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from awt.mvp import (
     MAX_AGENT_INPUT_TOKENS,
@@ -142,6 +144,147 @@ class LeanRuntimeTests(unittest.TestCase):
             )
         self.assertEqual(calls, [])
 
+    def test_large_argument_governance_uses_bounded_parallel_json_summary(self):
+        source = (
+            "# Results\n"
+            "Mode A reports d=-0.157; Mode B reports d=+0.097, "
+            "with 5/10 models sign-stable.\n"
+            + ("Background context without a result anchor.\n" * 5_000)
+        ).encode()
+        evidence_value = {
+            "mode_A": {
+                "d_pooled": -0.157,
+                "n_models_negative": 7,
+                "n_models_total": 10,
+                "per_model_d": {
+                    "m1": 0.1,
+                    "m2": -0.2,
+                    "m3": -0.3,
+                    "m4": 0.4,
+                },
+            },
+            "mode_B": {
+                "d_pooled": 0.097,
+                "n_models_negative": 2,
+                "n_models_total": 10,
+                "per_model_d": {
+                    "m1": 0.2,
+                    "m2": 0.3,
+                    "m3": -0.4,
+                    "m4": 0.5,
+                },
+            },
+        }
+        evidence = json.dumps(evidence_value, indent=2).encode()
+        captured = []
+        with tempfile.TemporaryDirectory() as temporary:
+            application = MvpApplication(
+                runner=lambda text, *_args: (
+                    captured.append(text) or empty_runner("", "", "")
+                ),
+                store=SessionStore(Path(temporary) / "sessions"),
+            )
+            analysed = application.analyse(
+                {
+                    "filename": "paper.md",
+                    "content_base64": base64.b64encode(source).decode(),
+                    "workflow_id": "argument-governance",
+                    "manuscript_purpose": "preprint",
+                    "author_goal": (
+                        "Check Mode A and Mode B claim-evidence alignment."
+                    ),
+                    "evidence_files": [
+                        {
+                            "filename": "results.json",
+                            "content_base64": base64.b64encode(evidence).decode(),
+                        }
+                    ],
+                }
+            )
+            self.assertEqual(analysed["context_route"], "bounded_preflight")
+            self.assertEqual(
+                analysed["context_pack_manifest"]["workflow_scope"],
+                "claim_evidence_alignment_only",
+            )
+            self.assertIn("complete argument hierarchy", captured[0])
+            self.assertLessEqual(
+                analysed["runtime_instruction_profile"]["prompt_plus_schema_estimate"][
+                    "tokens"
+                ],
+                MAX_AGENT_INPUT_TOKENS,
+            )
+            inventory = {
+                item["filename"]: item
+                for item in analysed["deterministic_preflight"]["inventory"]
+            }
+            parallel = inventory["results.json"]["structure"]["parallel_object_summary"]
+            self.assertEqual(parallel["branches"], ["mode_A", "mode_B"])
+            scalars = {
+                item["field"]: item["values"]
+                for item in parallel["shared_scalar_values"]
+            }
+            self.assertEqual(
+                scalars["d_pooled"],
+                {"mode_A": -0.157, "mode_B": 0.097},
+            )
+            scalar_maps = {
+                item["field"]: item["values"] for item in parallel["shared_scalar_maps"]
+            }
+            self.assertEqual(
+                scalar_maps["per_model_d"]["mode_B"]["m3"],
+                -0.4,
+            )
+            restored = MvpApplication(
+                runner=lambda *_args: self.fail("restore reran the model"),
+                store=SessionStore(Path(temporary) / "sessions"),
+            ).restore({"session_id": analysed["session_id"]})
+            self.assertEqual(
+                restored["context_pack_manifest"],
+                analysed["context_pack_manifest"],
+            )
+
+    def test_version_one_bounded_session_remains_restorable(self):
+        source = (
+            "# Findings\n"
+            "The reported evaluation score was 72.4 across 18 clusters.\n"
+            + ("Background context without a result anchor.\n" * 5_000)
+        ).encode()
+        evidence = (
+            "metric,value,clusters\n"
+            "evaluation_score,72.4,18\n" + ("unrelated_measure,0.1,3\n" * 5_000)
+        ).encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "sessions"
+            application = MvpApplication(
+                runner=empty_runner,
+                store=SessionStore(root),
+            )
+            with patch("awt.context_pack.ALGORITHM_VERSION", 1):
+                analysed = application.analyse(
+                    {
+                        "filename": "paper.md",
+                        "content_base64": base64.b64encode(source).decode(),
+                        "workflow_id": "audit",
+                        "manuscript_purpose": "preprint",
+                        "evidence_files": [
+                            {
+                                "filename": "results.csv",
+                                "content_base64": base64.b64encode(evidence).decode(),
+                            }
+                        ],
+                    }
+                )
+            self.assertEqual(
+                analysed["context_pack_manifest"]["algorithm"]["version"], 1
+            )
+            restored = MvpApplication(
+                runner=lambda *_args: self.fail("restore reran the model"),
+                store=SessionStore(root),
+            ).restore({"session_id": analysed["session_id"]})
+            self.assertEqual(
+                restored["context_pack_manifest"]["algorithm"]["version"], 1
+            )
+
     def test_restart_preserves_analysis_and_explicit_apply_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "sessions"
@@ -188,7 +331,9 @@ class LeanRuntimeTests(unittest.TestCase):
                 }
             )
             copy = base64.b64decode(exported["copy_base64"])
-            self.assertEqual(SOURCE, b"The conclusion proves universal effectiveness.\n")
+            self.assertEqual(
+                SOURCE, b"The conclusion proves universal effectiveness.\n"
+            )
             self.assertNotEqual(copy, SOURCE)
             self.assertFalse(exported["review"]["apply_source"])
             self.assertTrue(exported["review"]["source_unchanged"])
@@ -207,7 +352,9 @@ class LeanRuntimeTests(unittest.TestCase):
                 "target_path": str(source),
                 "authorisation": None,
             }
-            with self.assertRaisesRegex(WorkflowAuthorityError, "invalid workflow mode"):
+            with self.assertRaisesRegex(
+                WorkflowAuthorityError, "invalid workflow mode"
+            ):
                 run_workflow(request)
             self.assertEqual(source.read_bytes(), SOURCE)
 

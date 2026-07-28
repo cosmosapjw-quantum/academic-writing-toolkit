@@ -74,7 +74,7 @@ from importlib.resources import files
 import awt
 from awt.mvp import WORKFLOWS
 
-assert awt.__version__ == "0.5.0rc1"
+assert awt.__version__ == "0.5.0rc2"
 assert len(WORKFLOWS) == 5
 assert files("awt").joinpath("mvp_index.html").is_file()
 assert files("awt").joinpath("demo-paper.md").is_file()
