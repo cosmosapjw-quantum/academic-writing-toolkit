@@ -152,17 +152,16 @@ curl -i https://harryhurry-academic-writing-toolkit-chatgpt-app.hf.space/mcp
 curl -fsS https://harryhurry-academic-writing-toolkit-chatgpt-app.hf.space/.well-known/openai-apps-challenge
 ```
 
-Pre-deployment hosted verification:
+Latest hosted verification:
 
 - Date: 2026-07-29
-- Space repo/runtime SHA: `5c0703a256460782fa4551ac2b4eadb919b92058`
-- `/health`: version `0.3.2`, `status: ok`
+- Space repo/runtime SHA: `876c6cf357de4dbdd2057066570b4f5a4366caa9`
+- `/health`: version `0.5.0-rc.4`, `status: ok`
 - `GET /mcp`: `405 Method not allowed`
-- MCP initialize: server version `0.3.2`, five tools
+- MCP initialize: server version `0.5.0-rc.4`
+- MCP scan smoke: five tools; all five declare the three required annotations and
+  `outputSchema`; five safe calls passed
 - `/.well-known/openai-apps-challenge`: returned the configured OpenAI challenge token
-
-This block records the old live state and must be replaced with the RC4 Space SHA and
-live checks after deployment.
 
 Latest OpenAI dashboard check:
 
