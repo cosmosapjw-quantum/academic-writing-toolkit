@@ -4,6 +4,10 @@ Thumbs.db
 *.pdf
 *.zip
 __pycache__/
+*.egg-info/
+.venv/
+build/
+dist/
 .env
 node_modules/
 .playwright-mcp/
