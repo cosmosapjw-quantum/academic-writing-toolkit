@@ -1,8 +1,16 @@
 # Academic Writing Toolkit Plugin
 
-This Codex plugin packages the academic-writing-toolkit skills for structured research and thesis writing workflows.
+This Codex plugin packages the Academic Writing Toolkit skills for structured research and
+thesis writing workflows.
 
-The plugin is Codex-complete: it does not require Gemini, gemini-agent, subagents, or external model review. External review tools may be used as optional advisory inputs, but local files and bundled checks remain the evidence boundary.
+This is the skills companion, not the local Workbench runtime. Installing it makes the 20
+bundled workflows available to a compatible agent host; it does not install or start the
+`awt` local web workbench. The Workbench is distributed separately as a wheel on the
+[GitHub Releases page](https://github.com/yha9806/academic-writing-toolkit/releases).
+
+The plugin does not require Gemini, gemini-agent, subagents, or external model review.
+External review tools may be used as optional advisory inputs, but local files and bundled
+checks remain the evidence boundary.
 
 An enhanced advisory mode can use API-key-backed external review when the user explicitly opts in. API keys should stay in environment variables, and any external output remains advisory rather than evidence.
 
@@ -44,11 +52,11 @@ Script-backed skills use helper scripts bundled inside the individual skill dire
 
 ## Publishing Assets
 
-The plugin manifest references local PNG assets under `assets/`:
+The skills-only plugin manifest references these local PNG assets under `assets/`:
 
 - `icon.png`
 - `logo.png`
-- `screenshot-workflow.png`
-- `screenshot-progress.png`
 
-Run `make plugin-check` before publishing to validate the manifest, marketplace entry, bundled helpers, and asset paths.
+Historical screenshots remain in the repository but are not part of the no-UI directory
+manifest. Run `make plugin-check` before publishing to validate the manifest, marketplace
+entry, bundled helpers, release metadata, and asset paths.

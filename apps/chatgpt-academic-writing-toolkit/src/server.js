@@ -1,9 +1,13 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import {
+  hostHeaderValidation,
+  localhostHostValidation,
+} from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
 
 import { TOOL_DEFINITIONS } from "./tool-definitions.js";
 import {
@@ -17,6 +21,7 @@ import {
 const APP_NAME = "academic-writing-toolkit";
 const APP_PACKAGE = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const APP_VERSION = APP_PACKAGE.version;
+export const MAX_REQUEST_BYTES = 1_048_576;
 
 const TOOL_HANDLERS = {
   audit_citations: auditCitations,
@@ -72,8 +77,17 @@ function methodNotAllowed(_req, res) {
   });
 }
 
-export function createHttpApp({ host = process.env.HOST || "127.0.0.1" } = {}) {
-  const app = createMcpExpressApp({ host });
+export function createHttpApp({
+  host = process.env.HOST || "127.0.0.1",
+  allowedHosts,
+} = {}) {
+  const app = express();
+  app.use(express.json({ limit: MAX_REQUEST_BYTES }));
+  if (allowedHosts?.length) {
+    app.use(hostHeaderValidation(allowedHosts));
+  } else if (["127.0.0.1", "localhost", "::1"].includes(host)) {
+    app.use(localhostHostValidation());
+  }
 
   app.use((_req, res, next) => {
     res.setHeader(
@@ -131,6 +145,32 @@ export function createHttpApp({ host = process.env.HOST || "127.0.0.1" } = {}) {
 
   app.get("/mcp", methodNotAllowed);
   app.delete("/mcp", methodNotAllowed);
+
+  app.use((error, _req, res, next) => {
+    if (error?.type === "entity.too.large") {
+      res.status(413).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32600,
+          message: "Request body exceeds the 1 MiB limit.",
+        },
+        id: null,
+      });
+      return;
+    }
+    if (error?.type === "entity.parse.failed") {
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32700,
+          message: "Invalid JSON request body.",
+        },
+        id: null,
+      });
+      return;
+    }
+    next(error);
+  });
 
   return app;
 }

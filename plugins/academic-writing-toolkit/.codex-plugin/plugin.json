@@ -1,6 +1,6 @@
 {
     "name":  "academic-writing-toolkit",
-    "version":  "0.4.0",
+    "version":  "0.5.0-rc.4",
     "description":  "Academic reading, thesis writing, thesis drift control, manuscript reframing, revision escalation, evidence-controlled review synthesis, release governance, citation auditing, British English checking, reference verification, human-evaluation handoff repair, and export skills for Codex.",
     "author":  {
                    "name":  "Academic Writing Toolkit Maintainers",
@@ -29,7 +29,7 @@
     "skills":  "./skills/",
     "interface":  {
                       "displayName":  "Academic Writing Toolkit",
-                      "shortDescription":  "Structured research, thesis drift control, manuscript reframing, revision escalation, evidence-review, release governance, citation, style, and export workflows.",
+                      "shortDescription":  "Evidence-led academic writing",
                       "longDescription":  "Academic Writing Toolkit packages local Codex skills for reading PDFs, recording source notes, mapping literature to chapters, building evidence-controlled gap reviews, controlling AI-assisted thesis edits with spine cards and drift audits, reframing report-like drafts into scientific manuscripts, stopping repeated failed revisions for diagnosis before more patches, integrating arguments, auditing citations and consistency, preparing release-governance packets, validating and repairing human-evaluation handoff packages, checking British English, reviewing paragraph logic, verifying BibTeX records, tracking progress, and exporting thesis materials.",
                       "developerName":  "Academic Writing Toolkit Maintainers",
                       "category":  "Productivity",
@@ -39,6 +39,7 @@
                                            "Review"
                                        ],
                       "websiteURL":  "https://github.com/yha9806/academic-writing-toolkit",
+                      "supportURL":  "https://github.com/yha9806/academic-writing-toolkit/issues",
                       "privacyPolicyURL":  "https://github.com/yha9806/academic-writing-toolkit/blob/main/docs/privacy.md",
                       "termsOfServiceURL":  "https://github.com/yha9806/academic-writing-toolkit/blob/main/docs/terms.md",
                       "defaultPrompt":  [
@@ -48,10 +49,6 @@
                                         ],
                       "brandColor":  "#2563EB",
                       "composerIcon":  "./assets/icon.png",
-                      "logo":  "./assets/logo.png",
-                      "screenshots":  [
-                                          "./assets/screenshot-workflow.png",
-                                          "./assets/screenshot-progress.png"
-                                      ]
+                      "logo":  "./assets/logo.png"
                   }
 }
