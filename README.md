@@ -71,6 +71,7 @@ The release-candidate workbench is the smallest end-to-end AWT product surface:
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install .
+.venv/bin/awt --check
 .venv/bin/awt
 ```
 
@@ -102,6 +103,9 @@ Current RC limits:
 
 - it uses an installed and authenticated Codex CLI; AWT does not yet ship an
   independent inference backend;
+- its unauthenticated HTTP server is deliberately restricted to this computer's
+  loopback interface, rejects non-local Host/Origin values, and cannot be
+  exposed with `--host 0.0.0.0`;
 - only explicitly selected files are available to the Agent;
 - PDF and DOCX import are not yet supported by this workbench;
 - local estimates are not provider billing records;
@@ -109,6 +113,9 @@ Current RC limits:
   improvement or publication outcomes.
 
 Use `AWT_CODEX_BIN=/absolute/path/to/codex awt` when Codex is not on `PATH`.
+Run `awt --version` when reporting a problem and `awt --check` to confirm the
+local runner, login state, required Codex flags, and session location without
+starting a model request.
 Local sessions default to
 `~/.local/share/academic-writing-toolkit/sessions` and can be deleted from the
 workbench.
@@ -254,6 +261,11 @@ Edit `CLAUDE.md` for project-specific directories, page limits, British English 
 - [README visual source in Figma](https://www.figma.com/design/HhaFm0uorv5oS7MsezWDN5)
 
 Every release should identify one exact Git ref, the packaged artifact and hash, its evidence state, the gate that approved it, and the owner of any remaining human decision.
+
+This repository currently provides open-source, local software. It does not
+define a paid subscription, hosted processing service, support SLA, refund
+policy, or billing relationship. Those require a separate commercial offer and
+customer-facing terms before payment is accepted.
 
 ## Development
 

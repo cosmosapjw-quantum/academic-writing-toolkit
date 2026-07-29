@@ -3,6 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +17,10 @@ from awt.mvp import (
     MvpError,
     SessionStore,
     WORKFLOWS,
+    _codex_binary,
+    _is_allowed_host_header,
+    _is_allowed_origin_header,
+    _is_loopback_host,
     analyse_document,
     build_agent_prompt,
 )
@@ -93,6 +100,90 @@ def replacement_runner(text: str, _workflow: str, _purpose: str) -> dict:
 
 
 class LeanRuntimeTests(unittest.TestCase):
+    def test_cli_version_check_and_loopback_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fake_codex = Path(temporary) / "codex"
+            fake_codex.write_text(
+                """#!/bin/sh
+case "$*" in
+  "--version") echo "codex 0.test" ;;
+  "login status") echo "Logged in using test fixture" ;;
+  "exec --help")
+    echo "--ephemeral --ignore-rules --ignore-user-config"
+    echo "--output-last-message --output-schema --sandbox"
+    echo "--skip-git-repo-check"
+    ;;
+  *) exit 2 ;;
+esac
+""",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o700)
+            environment = {
+                **os.environ,
+                "AWT_CODEX_BIN": str(fake_codex),
+                "AWT_SESSION_DIR": str(Path(temporary) / "sessions"),
+            }
+            version = subprocess.run(
+                [sys.executable, "-m", "awt.mvp", "--version"],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=environment,
+            )
+            self.assertEqual(version.returncode, 0)
+            self.assertIn("0.5.0rc3", version.stdout)
+            check = subprocess.run(
+                [sys.executable, "-m", "awt.mvp", "--check"],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=environment,
+            )
+            self.assertEqual(check.returncode, 0)
+            self.assertIn("Local preflight: ready", check.stdout)
+            self.assertIn("no model request was made", check.stdout)
+            self.assertIn("Codex version: codex 0.test", check.stdout)
+            remote = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "awt.mvp",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "0",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=environment,
+            )
+            self.assertEqual(remote.returncode, 2)
+            self.assertIn("only accepts a local loopback host", remote.stderr)
+        self.assertTrue(_is_loopback_host("127.0.0.1"))
+        self.assertTrue(_is_loopback_host("localhost"))
+        self.assertFalse(_is_loopback_host("0.0.0.0"))
+        self.assertTrue(_is_allowed_host_header("127.0.0.1:8784", 8784))
+        self.assertTrue(_is_allowed_host_header("localhost:8784", 8784))
+        self.assertFalse(_is_allowed_host_header("attacker.example:8784", 8784))
+        self.assertFalse(_is_allowed_host_header("127.0.0.1:9999", 8784))
+        self.assertTrue(
+            _is_allowed_origin_header("http://127.0.0.1:8784", 8784)
+        )
+        self.assertFalse(
+            _is_allowed_origin_header("https://attacker.example", 8784)
+        )
+
+    def test_codex_runner_must_be_executable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Path(temporary) / "codex"
+            runner.write_text("#!/bin/sh\n", encoding="utf-8")
+            runner.chmod(0o600)
+            with patch.dict(os.environ, {"AWT_CODEX_BIN": str(runner)}):
+                with self.assertRaisesRegex(MvpError, "不可执行"):
+                    _codex_binary()
+
     def test_five_workflows_use_lean_prompt_and_keep_source_read_only(self):
         for workflow_id in WORKFLOWS:
             with self.subTest(workflow_id=workflow_id):

@@ -11,11 +11,13 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Callable, Mapping
@@ -26,6 +28,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from awt import __version__
 from awt.context_pack import (
     MODEL_CONTEXT_TOKEN_LIMIT,
     ContextPackError,
@@ -47,6 +50,15 @@ MAX_AGENT_INPUT_TOKENS = 20_000
 MAX_ALWAYS_ON_INSTRUCTION_TOKENS = 1_000
 MAX_WORKFLOW_CARD_TOKENS = 500
 LEAN_RUNTIME_CONTRACT_VERSION = 1
+REQUIRED_CODEX_EXEC_FLAGS = (
+    "--ephemeral",
+    "--ignore-rules",
+    "--ignore-user-config",
+    "--output-last-message",
+    "--output-schema",
+    "--sandbox",
+    "--skip-git-repo-check",
+)
 DEFAULT_CODEX = Path("/Applications/ChatGPT.app/Contents/Resources/codex")
 DEFAULT_SESSION_ROOT = (
     Path.home() / ".local" / "share" / "academic-writing-toolkit" / "sessions"
@@ -933,7 +945,118 @@ def _codex_binary() -> Path:
         path = Path(found)
     if not path.is_file():
         raise MvpError(f"Codex runner 不存在：{path}")
+    if not os.access(path, os.X_OK):
+        raise MvpError(f"Codex runner 不可执行：{path}")
     return path
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True only for loopback hosts supported by this local HTTP server."""
+
+    value = host.strip().lower()
+    if value == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return address.version == 4 and address.is_loopback
+
+
+def _is_allowed_host_header(value: str | None, port: int) -> bool:
+    """Reject DNS-rebinding authorities before serving local session data."""
+
+    if not value or any(character in value for character in "@ /?#\t\r\n"):
+        return False
+    try:
+        authority = urlparse(f"http://{value}")
+        authority_port = authority.port
+    except ValueError:
+        return False
+    return bool(
+        authority.hostname
+        and _is_loopback_host(authority.hostname)
+        and authority_port in {None, port}
+    )
+
+
+def _is_allowed_origin_header(value: str | None, port: int) -> bool:
+    """Allow command-line clients without Origin and browser requests from AWT."""
+
+    if value is None:
+        return True
+    try:
+        origin = urlparse(value)
+        origin_port = origin.port
+    except ValueError:
+        return False
+    return bool(
+        origin.scheme == "http"
+        and origin.hostname
+        and _is_loopback_host(origin.hostname)
+        and origin_port == port
+        and not origin.username
+        and not origin.password
+        and not origin.path
+        and not origin.params
+        and not origin.query
+        and not origin.fragment
+    )
+
+
+def _probe_codex_command(path: Path, arguments: list[str], label: str) -> str:
+    try:
+        completed = subprocess.run(
+            [str(path), *arguments],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise MvpError(f"Codex {label} 检查失败：{error}") from error
+    output = "\n".join(
+        value.strip() for value in (completed.stdout, completed.stderr) if value.strip()
+    )
+    if completed.returncode != 0:
+        raise MvpError(f"Codex {label} 检查失败：{output[-600:]}")
+    return output
+
+
+def _codex_preflight() -> dict[str, str]:
+    path = _codex_binary()
+    version = _probe_codex_command(path, ["--version"], "版本")
+    _probe_codex_command(path, ["login", "status"], "登录状态")
+    help_text = _probe_codex_command(path, ["exec", "--help"], "exec 参数")
+    missing = [flag for flag in REQUIRED_CODEX_EXEC_FLAGS if flag not in help_text]
+    if missing:
+        raise MvpError(f"Codex 缺少 AWT 所需参数：{', '.join(missing)}")
+    return {
+        "path": str(path),
+        "version": version.splitlines()[0],
+        "authentication": "available",
+    }
+
+
+def _print_runtime_check() -> int:
+    """Print a small local preflight without starting the server or a model run."""
+
+    print(f"AWT version: {__version__}")
+    print("Network: loopback-only local HTTP")
+    session_root = Path(
+        os.environ.get("AWT_SESSION_DIR", DEFAULT_SESSION_ROOT)
+    ).expanduser()
+    print(f"Local sessions: {session_root}")
+    try:
+        runner = _codex_preflight()
+    except MvpError as error:
+        print(f"Codex runner: unavailable ({error})", file=sys.stderr)
+        return 1
+    print(f"Codex runner: {runner['path']}")
+    print(f"Codex version: {runner['version']}")
+    print("Codex authentication: available")
+    print("Local preflight: ready (no model request was made)")
+    return 0
 
 
 def codex_runner(
@@ -2076,9 +2199,21 @@ def handler(application: MvpApplication) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             self.wfile.write(body)
+
+        def _local_request_allowed(self) -> bool:
+            port = int(self.server.server_port)
+            client_host = str(self.client_address[0])
+            return (
+                _is_loopback_host(client_host)
+                and _is_allowed_host_header(self.headers.get("Host"), port)
+                and _is_allowed_origin_header(self.headers.get("Origin"), port)
+            )
 
         def _json(self, status: int, value: object) -> None:
             self._send(
@@ -2088,6 +2223,12 @@ def handler(application: MvpApplication) -> type[BaseHTTPRequestHandler]:
             )
 
         def do_GET(self) -> None:  # noqa: N802
+            if not self._local_request_allowed():
+                self._json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": "AWT 只接受本机同源请求"},
+                )
+                return
             path = urlparse(self.path).path
             if path in {"/", "/index.html"}:
                 self._send(
@@ -2111,6 +2252,12 @@ def handler(application: MvpApplication) -> type[BaseHTTPRequestHandler]:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._local_request_allowed():
+                self._json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": "AWT 只接受本机同源请求"},
+                )
+                return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length <= 0 or length > 8_000_000:
@@ -2153,11 +2300,35 @@ def handler(application: MvpApplication) -> type[BaseHTTPRequestHandler]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the local AWT MVP")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="check the local runtime without starting the server",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8784)
     args = parser.parse_args()
+    if not _is_loopback_host(args.host):
+        parser.error(
+            "AWT has no network authentication and only accepts a local "
+            "loopback host such as 127.0.0.1"
+        )
+    if args.check:
+        return _print_runtime_check()
     application = MvpApplication()
-    server = ThreadingHTTPServer((args.host, args.port), handler(application))
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), handler(application))
+    except OSError as error:
+        print(
+            f"error: cannot start AWT on {args.host}:{args.port}: {error}",
+            file=sys.stderr,
+        )
+        return 2
     print(f"AWT MVP: http://{args.host}:{args.port}/")
     print(f"Local sessions: {application.store.root}")
     print("Ctrl-C stops the local server. Input source files are never overwritten.")
