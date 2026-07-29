@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import awt
 from awt.mvp import (
     MAX_AGENT_INPUT_TOKENS,
     MvpApplication,
@@ -100,6 +101,26 @@ def replacement_runner(text: str, _workflow: str, _purpose: str) -> dict:
 
 
 class LeanRuntimeTests(unittest.TestCase):
+    def test_release_versions_align_across_workbench_plugin_and_app(self):
+        repository_root = Path(__file__).resolve().parents[2]
+        plugin = json.loads(
+            (
+                repository_root
+                / "plugins/academic-writing-toolkit/.codex-plugin/plugin.json"
+            ).read_text(encoding="utf-8")
+        )
+        app = json.loads(
+            (
+                repository_root
+                / "apps/chatgpt-academic-writing-toolkit/package.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(plugin["version"], app["version"])
+        self.assertEqual(
+            awt.__version__,
+            app["version"].replace("-rc.", "rc"),
+        )
+
     def test_cli_version_check_and_loopback_boundary(self):
         with tempfile.TemporaryDirectory() as temporary:
             fake_codex = Path(temporary) / "codex"
@@ -132,7 +153,7 @@ esac
                 env=environment,
             )
             self.assertEqual(version.returncode, 0)
-            self.assertIn("0.5.0rc3", version.stdout)
+            self.assertIn("0.5.0rc4", version.stdout)
             check = subprocess.run(
                 [sys.executable, "-m", "awt.mvp", "--check"],
                 text=True,

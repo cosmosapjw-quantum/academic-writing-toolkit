@@ -41,8 +41,11 @@ PYTHON="$PYTHON_BIN" bash "$SCRIPT_DIR/sync-plugin.sh" --check >/dev/null
 
 "$PYTHON_BIN" - "$PLUGIN_JSON" "$MARKETPLACE_JSON" <<'PY'
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
+from urllib.parse import urlparse
 
 plugin_path = Path(sys.argv[1])
 marketplace_path = Path(sys.argv[2])
@@ -52,6 +55,31 @@ marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
 name = "academic-writing-toolkit"
 if plugin.get("name") != name:
     raise SystemExit("plugin name must be academic-writing-toolkit")
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name):
+    raise SystemExit("plugin name must satisfy final directory format and length limits")
+version = plugin.get("version", "")
+if not re.fullmatch(
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+    version,
+):
+    raise SystemExit("plugin version must be valid SemVer")
+if len(version) > 64:
+    raise SystemExit("plugin version must contain at most 64 characters")
+description = plugin.get("description")
+if not isinstance(description, str) or not description or len(description) > 1024:
+    raise SystemExit("plugin description must contain 1-1024 characters")
+author = plugin.get("author")
+if not isinstance(author, dict):
+    raise SystemExit("plugin author must be an object")
+author_name = author.get("name")
+if (
+    not isinstance(author_name, str)
+    or not author_name
+    or "\n" in author_name
+    or len(author_name) > 120
+):
+    raise SystemExit("plugin author.name must contain 1-120 single-line characters")
 if plugin.get("skills") != "./skills/":
     raise SystemExit("plugin skills path must be ./skills/")
 if "hooks" in plugin or "mcpServers" in plugin or "apps" in plugin:
@@ -68,28 +96,165 @@ for field in [
     "category",
     "defaultPrompt",
     "websiteURL",
+    "supportURL",
     "privacyPolicyURL",
     "termsOfServiceURL",
     "composerIcon",
     "logo",
-    "screenshots",
 ]:
     if not interface.get(field):
         raise SystemExit(f"plugin interface.{field} is required")
-if len(interface.get("defaultPrompt", [])) > 3:
-    raise SystemExit("plugin interface.defaultPrompt must contain at most 3 entries")
+short_description = interface["shortDescription"]
+if (
+    not isinstance(short_description, str)
+    or not short_description
+    or "\n" in short_description
+    or len(short_description) > 30
+):
+    raise SystemExit(
+        "plugin interface.shortDescription must contain 1-30 single-line characters"
+    )
+
+display_name = interface["displayName"]
+if (
+    not isinstance(display_name, str)
+    or not display_name
+    or "\n" in display_name
+    or len(display_name) > 30
+):
+    raise SystemExit(
+        "plugin interface.displayName must contain 1-30 single-line characters"
+    )
+
+long_description = interface["longDescription"]
+if (
+    not isinstance(long_description, str)
+    or not long_description
+    or len(long_description) > 4000
+):
+    raise SystemExit("plugin interface.longDescription must contain 1-4000 characters")
+
+developer_name = interface["developerName"]
+if (
+    not isinstance(developer_name, str)
+    or not developer_name
+    or "\n" in developer_name
+    or len(developer_name) > 80
+):
+    raise SystemExit(
+        "plugin interface.developerName must contain 1-80 single-line characters"
+    )
+if developer_name != author_name:
+    raise SystemExit("plugin author.name and interface.developerName must match")
+
+allowed_categories = {
+    "Productivity",
+    "Creativity",
+    "Developer Tools",
+    "Business & Operations",
+    "Data & Analytics",
+    "Communication",
+    "Education & Research",
+    "Security",
+    "Finance",
+    "Healthcare",
+    "Travel",
+    "Entertainment",
+    "Other",
+}
+if interface["category"] not in allowed_categories:
+    raise SystemExit("plugin interface.category is not supported")
+
+capabilities = interface.get("capabilities")
+if not isinstance(capabilities, list) or len(capabilities) > 20:
+    raise SystemExit("plugin interface.capabilities must contain at most 20 entries")
+for capability in capabilities:
+    if (
+        not isinstance(capability, str)
+        or not capability
+        or "\n" in capability
+        or len(capability) > 120
+    ):
+        raise SystemExit(
+            "each plugin capability must contain 1-120 single-line characters"
+        )
+
+default_prompts = interface["defaultPrompt"]
+if not isinstance(default_prompts, list) or not 1 <= len(default_prompts) <= 3:
+    raise SystemExit("plugin interface.defaultPrompt must contain 1-3 entries")
+normalised_prompts = set()
+for prompt in default_prompts:
+    if (
+        not isinstance(prompt, str)
+        or not prompt
+        or "\n" in prompt
+        or len(prompt) > 128
+        or "@" in prompt
+    ):
+        raise SystemExit(
+            "each default prompt must be single-line, mention-free, and 1-128 characters"
+        )
+    normalised = " ".join(unicodedata.normalize("NFKC", prompt).split()).casefold()
+    if normalised in normalised_prompts:
+        raise SystemExit("plugin default prompts must be unique after normalisation")
+    normalised_prompts.add(normalised)
+
+for field in [
+    "homepage",
+    "repository",
+]:
+    value = plugin.get(field)
+    parsed = urlparse(value) if isinstance(value, str) else None
+    if (
+        not parsed
+        or parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+    ):
+        raise SystemExit(f"plugin {field} must be an HTTPS URL")
+
+author_url = author.get("url")
+author_url_parsed = urlparse(author_url) if isinstance(author_url, str) else None
+if (
+    not author_url_parsed
+    or author_url_parsed.scheme != "https"
+    or not author_url_parsed.netloc
+    or author_url_parsed.username
+    or author_url_parsed.password
+    or len(author_url) > 1024
+):
+    raise SystemExit("plugin author.url must be a credential-free HTTPS URL")
+
+for field in [
+    "websiteURL",
+    "supportURL",
+    "privacyPolicyURL",
+    "termsOfServiceURL",
+]:
+    value = interface[field]
+    parsed = urlparse(value) if isinstance(value, str) else None
+    if (
+        not parsed
+        or parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or len(value) > 1024
+    ):
+        raise SystemExit(f"plugin interface.{field} must be an HTTPS URL")
+
+brand_color = interface.get("brandColor")
+if brand_color is not None and not re.fullmatch(r"#[0-9A-Fa-f]{6}", brand_color):
+    raise SystemExit("plugin interface.brandColor must be a six-digit hex colour")
 
 for field in ["composerIcon", "logo"]:
     value = interface[field]
     if not isinstance(value, str) or not value.startswith("./assets/") or not value.endswith(".png"):
         raise SystemExit(f"plugin interface.{field} must point to a PNG under ./assets/")
 
-screenshots = interface["screenshots"]
-if not isinstance(screenshots, list) or not 1 <= len(screenshots) <= 3:
-    raise SystemExit("plugin interface.screenshots must contain 1-3 PNG paths")
-for screenshot in screenshots:
-    if not isinstance(screenshot, str) or not screenshot.startswith("./assets/") or not screenshot.endswith(".png"):
-        raise SystemExit("plugin screenshots must be PNG files under ./assets/")
+if "screenshots" in interface:
+    raise SystemExit("skills-only plugins must not declare screenshots")
 
 entries = [entry for entry in marketplace.get("plugins", []) if entry.get("name") == name]
 if len(entries) != 1:
@@ -115,7 +280,7 @@ from pathlib import Path
 plugin_root = Path(sys.argv[1])
 plugin = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 interface = plugin["interface"]
-assets = [interface["composerIcon"], interface["logo"], *interface["screenshots"]]
+assets = [interface["composerIcon"], interface["logo"]]
 
 for asset in assets:
     relative_asset = asset[2:] if asset.startswith("./") else asset
