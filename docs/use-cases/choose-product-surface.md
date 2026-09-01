@@ -8,9 +8,12 @@ Use this for the full workflow. The agent can read and write your local project 
 
 Start here when you use Claude Code, Codex, Gemini CLI, Cursor, or another compatible local agent host.
 
-## Codex Plugin
+## Agent Plugin (Claude Code And Codex)
 
-Use this when you want the same local skills packaged as an installable Codex plugin. The plugin is a distribution wrapper, not a different workflow.
+Use this when you want the same local skills packaged as an installable plugin
+for Claude Code or Codex. The plugin is a distribution wrapper, not a different
+workflow: one skills tree serves both hosts. In Claude Code the skills load
+namespaced as `/academic-writing-toolkit:<skill>`.
 
 ## Local Review Workbench
 
@@ -26,6 +29,6 @@ Use this for pasted-text checks and reading-note template generation. The ChatGP
 ## Quick Rule
 
 If the task needs the full project workflow, use local agent skills or the
-Codex plugin. If the author needs one bounded review and apply-copy flow, use
+agent plugin. If the author needs one bounded review and apply-copy flow, use
 the local review workbench. If the task only needs pasted text, the ChatGPT App
 surface can be enough.

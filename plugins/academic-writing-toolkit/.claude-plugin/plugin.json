@@ -1,0 +1,30 @@
+{
+  "name": "academic-writing-toolkit",
+  "displayName": "Academic Writing Toolkit",
+  "version": "0.5.0",
+  "description": "20 evidence-controlled academic writing skills: PDF reading and source notes, literature and gap maps, argument and claim governance, bounded AI revision with drift audits and human gates, citation and reference auditing, British English checks, clean-room peer and self review, and release governance.",
+  "author": {
+    "name": "Academic Writing Toolkit Maintainers",
+    "url": "https://github.com/yha9806"
+  },
+  "homepage": "https://github.com/cosmosapjw-quantum/academic-writing-toolkit",
+  "repository": "https://github.com/cosmosapjw-quantum/academic-writing-toolkit",
+  "license": "MIT",
+  "keywords": [
+    "academic-writing",
+    "thesis",
+    "citations",
+    "research",
+    "british-english",
+    "references",
+    "evidence-review",
+    "release-governance",
+    "literature-review",
+    "human-evaluation",
+    "annotation-repair",
+    "manuscript-reframe",
+    "revision-escalation",
+    "thesis-control",
+    "scientific-writing"
+  ]
+}

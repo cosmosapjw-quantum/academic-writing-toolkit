@@ -29,10 +29,10 @@ init:  ## Open CLAUDE.md in $EDITOR for first-time customisation, then sync
 sync:  ## Regenerate AGENTS.md and GEMINI.md from CLAUDE.md
 	@bash scripts/sync-config.sh
 
-plugin-sync:  ## Regenerate the Codex plugin skills from .claude/skills
+plugin-sync:  ## Regenerate the packaged plugin skills from .claude/skills
 	@bash scripts/sync-plugin.sh
 
-plugin-check:  ## Validate the Codex plugin package and sync state
+plugin-check:  ## Validate the Claude Code and Codex plugin packages and sync state
 	@bash scripts/check-plugin.sh
 
 chatgpt-app-check:  ## Run the ChatGPT App MCP server checks

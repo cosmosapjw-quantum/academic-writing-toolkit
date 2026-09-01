@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # scripts/sync-plugin.sh [--check]
 #
-# Regenerates the Codex plugin's skills from .claude/skills, then applies the
-# small path adaptations needed for a self-contained plugin package.
+# Regenerates the packaged plugin's skills from .claude/skills, then applies the
+# small path adaptations needed for a self-contained plugin package. One skills/
+# tree serves both the Claude Code and the Codex manifest.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

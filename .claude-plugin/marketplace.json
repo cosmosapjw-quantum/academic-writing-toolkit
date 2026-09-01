@@ -1,0 +1,30 @@
+{
+  "name": "academic-writing-toolkit",
+  "description": "Academic Writing Toolkit distribution for Claude Code: evidence-controlled reading, literature review, argument governance, bounded revision control, auditing, and release-governance skills.",
+  "owner": {
+    "name": "cosmosapjw-quantum",
+    "url": "https://github.com/cosmosapjw-quantum"
+  },
+  "plugins": [
+    {
+      "name": "academic-writing-toolkit",
+      "source": "./plugins/academic-writing-toolkit",
+      "description": "20 evidence-controlled academic writing skills: PDF reading and source notes, literature and gap maps, argument and claim governance, bounded AI revision with drift audits and human gates, citation and reference auditing, British English checks, clean-room peer and self review, and release governance.",
+      "author": {
+        "name": "Academic Writing Toolkit Maintainers",
+        "url": "https://github.com/yha9806"
+      },
+      "category": "productivity",
+      "keywords": [
+        "academic-writing",
+        "thesis",
+        "literature-review",
+        "citations",
+        "references",
+        "release-governance",
+        "scientific-writing"
+      ],
+      "homepage": "https://github.com/cosmosapjw-quantum/academic-writing-toolkit/tree/main/plugins/academic-writing-toolkit"
+    }
+  ]
+}

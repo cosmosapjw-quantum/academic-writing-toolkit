@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # scripts/check-plugin.sh
 #
-# Validates the local Codex plugin package before publishing or marketplace use.
+# Validates the local Claude Code and Codex plugin packages before publishing or
+# marketplace use. One skills/ tree serves both hosts, so both manifests are
+# checked together and their versions must agree.
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 
@@ -12,6 +14,8 @@ source "$SCRIPT_DIR/lib.sh"
 PLUGIN_ROOT="$REPO_ROOT/plugins/academic-writing-toolkit"
 PLUGIN_JSON="$PLUGIN_ROOT/.codex-plugin/plugin.json"
 MARKETPLACE_JSON="$REPO_ROOT/.agents/plugins/marketplace.json"
+CLAUDE_PLUGIN_JSON="$PLUGIN_ROOT/.claude-plugin/plugin.json"
+CLAUDE_MARKETPLACE_JSON="$REPO_ROOT/.claude-plugin/marketplace.json"
 
 find_python() {
     if [[ -n "${PYTHON:-}" ]]; then
@@ -33,11 +37,15 @@ PYTHON_BIN="$(find_python)"
 
 [[ -f "$PLUGIN_JSON" ]] || die "missing plugin manifest: $PLUGIN_JSON"
 [[ -f "$MARKETPLACE_JSON" ]] || die "missing marketplace manifest: $MARKETPLACE_JSON"
+[[ -f "$CLAUDE_PLUGIN_JSON" ]] || die "missing Claude plugin manifest: $CLAUDE_PLUGIN_JSON"
+[[ -f "$CLAUDE_MARKETPLACE_JSON" ]] || die "missing Claude marketplace manifest: $CLAUDE_MARKETPLACE_JSON"
 
 PYTHON="$PYTHON_BIN" bash "$SCRIPT_DIR/sync-plugin.sh" --check >/dev/null
 
 "$PYTHON_BIN" -m json.tool "$PLUGIN_JSON" >/dev/null
 "$PYTHON_BIN" -m json.tool "$MARKETPLACE_JSON" >/dev/null
+"$PYTHON_BIN" -m json.tool "$CLAUDE_PLUGIN_JSON" >/dev/null
+"$PYTHON_BIN" -m json.tool "$CLAUDE_MARKETPLACE_JSON" >/dev/null
 
 "$PYTHON_BIN" - "$PLUGIN_JSON" "$MARKETPLACE_JSON" <<'PY'
 import json
@@ -271,6 +279,193 @@ if not entry.get("category"):
     raise SystemExit("marketplace category is required")
 PY
 
+"$PYTHON_BIN" - "$PLUGIN_ROOT" "$CLAUDE_PLUGIN_JSON" "$CLAUDE_MARKETPLACE_JSON" "$PLUGIN_JSON" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+plugin_root = Path(sys.argv[1])
+claude_plugin_path = Path(sys.argv[2])
+claude_marketplace_path = Path(sys.argv[3])
+codex_plugin_path = Path(sys.argv[4])
+
+plugin = json.loads(claude_plugin_path.read_text(encoding="utf-8"))
+marketplace = json.loads(claude_marketplace_path.read_text(encoding="utf-8"))
+codex_plugin = json.loads(codex_plugin_path.read_text(encoding="utf-8"))
+
+name = "academic-writing-toolkit"
+semver = re.compile(
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+kebab = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def require_https(value, label):
+    parsed = urlparse(value) if isinstance(value, str) else None
+    if (
+        not parsed
+        or parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or len(value) > 1024
+    ):
+        raise SystemExit("%s must be a credential-free HTTPS URL" % label)
+
+
+# Only plugin.json may live in .claude-plugin/; component directories placed
+# there are silently ignored by the runtime, so reject them here.
+claude_dir = claude_plugin_path.parent
+if claude_dir.name != ".claude-plugin":
+    raise SystemExit("Claude manifest must live in .claude-plugin/")
+for child in sorted(claude_dir.iterdir()):
+    if child.is_dir():
+        raise SystemExit(
+            "no directories are allowed inside .claude-plugin/: %s" % child.name
+        )
+    if child.name != "plugin.json":
+        raise SystemExit(
+            ".claude-plugin/ must contain only plugin.json, found: %s" % child.name
+        )
+
+allowed_plugin_fields = {
+    "$schema",
+    "name",
+    "displayName",
+    "version",
+    "description",
+    "author",
+    "homepage",
+    "repository",
+    "license",
+    "keywords",
+    "defaultEnabled",
+    "dependencies",
+    "metadata",
+    "commands",
+    "agents",
+    "skills",
+    "hooks",
+    "mcpServers",
+    "lspServers",
+    "outputStyles",
+    "themes",
+    "workflows",
+    "userConfig",
+    "evals",
+}
+unknown = sorted(set(plugin) - allowed_plugin_fields)
+if unknown:
+    raise SystemExit("unknown Claude plugin manifest fields: " + ", ".join(unknown))
+if "interface" in plugin:
+    raise SystemExit("Claude plugin manifest must not carry the Codex interface block")
+if plugin.get("name") != name:
+    raise SystemExit("Claude plugin name must be academic-writing-toolkit")
+if not kebab.fullmatch(plugin["name"]):
+    raise SystemExit("Claude plugin name must be kebab-case")
+version = plugin.get("version", "")
+if not isinstance(version, str) or not semver.fullmatch(version):
+    raise SystemExit("Claude plugin version must be valid SemVer")
+description = plugin.get("description")
+if not isinstance(description, str) or not description.strip():
+    raise SystemExit("Claude plugin description is required")
+author = plugin.get("author")
+if (
+    not isinstance(author, dict)
+    or not isinstance(author.get("name"), str)
+    or not author["name"].strip()
+):
+    raise SystemExit("Claude plugin author.name is required")
+for field in ["homepage", "repository"]:
+    require_https(plugin.get(field), "Claude plugin " + field)
+if plugin.get("license") != "MIT":
+    raise SystemExit("Claude plugin license must be MIT")
+keywords = plugin.get("keywords")
+if not isinstance(keywords, list) or not keywords:
+    raise SystemExit("Claude plugin keywords must be a non-empty list")
+
+# The runtime always scans <plugin root>/skills/; a declared skills path is
+# additive, so it must resolve rather than replace that default.
+declared_skills = plugin.get("skills")
+if declared_skills is None:
+    if not (plugin_root / "skills").is_dir():
+        raise SystemExit("default skills/ directory is missing from the plugin root")
+else:
+    entries = [declared_skills] if isinstance(declared_skills, str) else declared_skills
+    if not isinstance(entries, list) or not entries:
+        raise SystemExit("Claude plugin skills must be a path or a list of paths")
+    for item in entries:
+        if not isinstance(item, str):
+            raise SystemExit("each Claude plugin skills entry must be a string path")
+        if item.startswith("/") or ".." in Path(item).parts:
+            raise SystemExit("Claude plugin skills paths must stay inside the plugin root")
+        if not (plugin_root / item).is_dir():
+            raise SystemExit("declared Claude plugin skills path does not resolve: " + item)
+
+allowed_marketplace_fields = {
+    "$schema",
+    "name",
+    "description",
+    "owner",
+    "metadata",
+    "plugins",
+    "renames",
+}
+unknown = sorted(set(marketplace) - allowed_marketplace_fields)
+if unknown:
+    raise SystemExit("unknown Claude marketplace fields: " + ", ".join(unknown))
+if marketplace.get("name") != name:
+    raise SystemExit("Claude marketplace name must be academic-writing-toolkit")
+if not kebab.fullmatch(marketplace["name"]):
+    raise SystemExit("Claude marketplace name must be kebab-case")
+owner = marketplace.get("owner")
+if (
+    not isinstance(owner, dict)
+    or not isinstance(owner.get("name"), str)
+    or not owner["name"].strip()
+):
+    raise SystemExit("Claude marketplace owner.name is required")
+if owner.get("url") is not None:
+    require_https(owner.get("url"), "Claude marketplace owner.url")
+
+market_entries = marketplace.get("plugins")
+if not isinstance(market_entries, list) or len(market_entries) != 1:
+    raise SystemExit("Claude marketplace must declare exactly one plugin entry")
+entry = market_entries[0]
+if entry.get("name") != name:
+    raise SystemExit("Claude marketplace entry name must be academic-writing-toolkit")
+if entry.get("source") != "./plugins/academic-writing-toolkit":
+    raise SystemExit(
+        "Claude marketplace entry source must be ./plugins/academic-writing-toolkit"
+    )
+if "policy" in entry:
+    raise SystemExit("Claude marketplace entries must not carry the Codex policy block")
+entry_description = entry.get("description")
+if not isinstance(entry_description, str) or not entry_description.strip():
+    raise SystemExit("Claude marketplace entry description is required")
+if entry.get("category") != "productivity":
+    raise SystemExit("Claude marketplace entry category must be productivity")
+market_root = claude_marketplace_path.parent.parent
+if not (market_root / entry["source"] / ".claude-plugin" / "plugin.json").is_file():
+    raise SystemExit("Claude marketplace source does not resolve to a plugin root")
+
+codex_version = codex_plugin.get("version")
+if version != codex_version:
+    raise SystemExit(
+        "version mismatch: Claude manifest %s vs Codex manifest %s"
+        % (version, codex_version)
+    )
+entry_version = entry.get("version")
+if entry_version is not None and entry_version != version:
+    raise SystemExit(
+        "Claude marketplace entry version %s does not match plugin.json %s"
+        % (entry_version, version)
+    )
+PY
+
 "$PYTHON_BIN" - "$PLUGIN_ROOT" "$PLUGIN_JSON" <<'PY'
 import json
 import struct
@@ -361,7 +556,7 @@ for path in skill_paths:
         raise SystemExit(f"skill description is required: {path}")
 PY
 
-if grep -R "\[TODO\]\|TODO:" "$PLUGIN_ROOT" "$MARKETPLACE_JSON" >/dev/null; then
+if grep -R "\[TODO\]\|TODO:" "$PLUGIN_ROOT" "$MARKETPLACE_JSON" "$CLAUDE_MARKETPLACE_JSON" >/dev/null; then
     die "plugin package contains TODO placeholders"
 fi
 
@@ -382,4 +577,20 @@ done
 "$PYTHON_BIN" "$PLUGIN_ROOT/skills/thesis-control/scripts/upgrade_thesis_control_revision_tracking.py" --help >/dev/null
 "$PYTHON_BIN" "$PLUGIN_ROOT/skills/self-review/scripts/check_self_review_packet.py" --help >/dev/null
 
-ok "plugin package validates"
+# Optional: the Claude Code CLI knows the authoritative manifest schema, but CI
+# has no `claude` binary, so this stays a soft, skippable gate. Two invocations
+# are required: `claude plugin validate <dir>` prefers a marketplace manifest
+# when one is present, so validating the repo root does not validate the plugin.
+if [[ "${AWT_SKIP_CLAUDE_CLI_VALIDATE:-0}" == "1" ]]; then
+    warn "AWT_SKIP_CLAUDE_CLI_VALIDATE=1; skipped 'claude plugin validate --strict'"
+elif command -v claude >/dev/null 2>&1; then
+    claude plugin validate "$PLUGIN_ROOT" --strict >/dev/null \
+        || die "claude plugin validate --strict failed for $PLUGIN_ROOT"
+    claude plugin validate "$REPO_ROOT" --strict >/dev/null \
+        || die "claude plugin validate --strict failed for $REPO_ROOT"
+    ok "claude CLI strict validation passed"
+else
+    warn "claude CLI not found; skipped 'claude plugin validate --strict'"
+fi
+
+ok "plugin packages validate"
