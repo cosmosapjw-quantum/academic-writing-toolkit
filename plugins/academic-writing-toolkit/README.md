@@ -1,7 +1,8 @@
 # Academic Writing Toolkit Plugin
 
-This Codex plugin packages the Academic Writing Toolkit skills for structured research and
-thesis writing workflows.
+This plugin packages the Academic Writing Toolkit skills for structured research and
+thesis writing workflows. One `skills/` tree serves two hosts:
+`.claude-plugin/plugin.json` for Claude Code and `.codex-plugin/plugin.json` for Codex.
 
 This is the skills companion, not the local Workbench runtime. Installing it makes the 20
 bundled workflows available to a compatible agent host; it does not install or start the
@@ -14,7 +15,26 @@ checks remain the evidence boundary.
 
 An enhanced advisory mode can use API-key-backed external review when the user explicitly opts in. API keys should stay in environment variables, and any external output remains advisory rather than evidence.
 
+## Install
+
+Claude Code:
+
+```
+/plugin marketplace add cosmosapjw-quantum/academic-writing-toolkit
+/plugin install academic-writing-toolkit@academic-writing-toolkit
+```
+
+Codex:
+
+```bash
+codex plugin marketplace add yha9806/academic-writing-toolkit \
+  --sparse .agents/plugins --sparse plugins/academic-writing-toolkit
+codex plugin add academic-writing-toolkit@academic-writing-toolkit
+```
+
 ## Included Skills
+
+In Claude Code these load namespaced as `/academic-writing-toolkit:<skill>`.
 
 - `read`: read academic PDFs page by page with structured output
 - `note`: record source notes in the toolkit notes format
@@ -52,11 +72,13 @@ Script-backed skills use helper scripts bundled inside the individual skill dire
 
 ## Publishing Assets
 
-The skills-only plugin manifest references these local PNG assets under `assets/`:
+The Codex manifest references these local PNG assets under `assets/`:
 
 - `icon.png`
 - `logo.png`
 
-Historical screenshots remain in the repository but are not part of the no-UI directory
-manifest. Run `make plugin-check` before publishing to validate the manifest, marketplace
-entry, bundled helpers, release metadata, and asset paths.
+Claude Code's plugin schema has no icon or logo field, so these assets apply to the
+Codex package only. Historical screenshots remain in the repository but are not part
+of the no-UI directory manifest. Run `make plugin-check` before publishing to validate
+both manifests, both marketplace entries, bundled helpers, release metadata, and asset
+paths.
